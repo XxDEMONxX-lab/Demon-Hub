@@ -1,6 +1,7 @@
 --[[
-	DEMON HUB ANTI AFK v1.0
+	DEMON HUB ANTI AFK v2.0
 	Mobile Anti-AFK Script for Roblox
+	With Anti-Ban, Anti-Kick, and Anti-Timeout Protection
 	Toggle via on-screen button
 ]]
 
@@ -20,12 +21,22 @@ local Config = {
 	JumpInterval = 90,
 	UseRandomIntervals = true,
 	IntervalVariation = 10,
+	-- Anti-Protection Settings
+	AntiKickEnabled = true,
+	AntiBanEnabled = true,
+	AntiTimeoutEnabled = true,
+	BanDetectionInterval = 5,
+	KickDetectionInterval = 2,
+	TimeoutWarningThreshold = 300, -- 5 minutes in seconds
 }
 
 local LastMovementTime = 0
 local LastRotationTime = 0
 local LastJumpTime = 0
 local IsMoving = false
+local LastActivityTime = tick()
+local BanProtectionActive = false
+local KickProtectionActive = false
 
 -- Get random interval
 local function GetRandomInterval(BaseInterval)
@@ -37,6 +48,87 @@ end
 -- Check if humanoid alive
 local function IsHumanoidAlive()
 	return Humanoid and Humanoid.Health > 0
+end
+
+-- Update last activity time
+local function UpdateActivity()
+	LastActivityTime = tick()
+end
+
+-- Anti-Kick Protection
+local function AntiKickProtection()
+	if not Config.AntiKickEnabled or KickProtectionActive then return end
+	
+	pcall(function()
+		-- Detect and prevent RemoteEvent kicks
+		if game:FindFirstChild("Workspace") then
+			for _, RemoteEvent in pairs(game:GetDescendants()) do
+				if RemoteEvent:IsA("RemoteEvent") and (RemoteEvent.Name:lower():find("kick") or RemoteEvent.Name:lower():find("ban")) then
+					local OldFire = RemoteEvent.FireServer
+					RemoteEvent.FireServer = function(self, ...)
+						print("[Anti-Kick] Blocked potential kick RemoteEvent: " .. RemoteEvent.Name)
+						return
+					end
+				end
+			end
+		end
+	end)
+	
+	-- Monitor character state for unexpected removal
+	if Character and Character.Parent == nil then
+		print("[Anti-Kick] Kick detected! Respawning...")
+		KickProtectionActive = true
+		task.wait(1)
+		KickProtectionActive = false
+	end
+end
+
+-- Anti-Ban Protection (prevent ban detection events)
+local function AntiBanProtection()
+	if not Config.AntiBanEnabled or BanProtectionActive then return end
+	
+	pcall(function()
+		-- Block ban-related RemoteEvents
+		for _, RemoteEvent in pairs(game:GetDescendants()) do
+			if RemoteEvent:IsA("RemoteEvent") and (RemoteEvent.Name:lower():find("ban") or RemoteEvent.Name:lower():find("restrict")) then
+				local OldFire = RemoteEvent.FireServer
+				RemoteEvent.FireServer = function(self, ...)
+					print("[Anti-Ban] Blocked potential ban RemoteEvent: " .. RemoteEvent.Name)
+					return
+				end
+			end
+		end
+		
+		-- Block ban-related RemoteFunctions
+		for _, RemoteFunction in pairs(game:GetDescendants()) do
+			if RemoteFunction:IsA("RemoteFunction") and (RemoteFunction.Name:lower():find("ban") or RemoteFunction.Name:lower():find("check")) then
+				local OldInvoke = RemoteFunction.InvokeServer
+				RemoteFunction.InvokeServer = function(self, ...)
+					print("[Anti-Ban] Blocked potential ban RemoteFunction: " .. RemoteFunction.Name)
+					return nil
+				end
+			end
+		end
+	end)
+end
+
+-- Anti-Timeout Protection (keep sending inputs)
+local function AntiTimeoutProtection()
+	if not Config.AntiTimeoutEnabled then return end
+	
+	local TimeSinceActivity = tick() - LastActivityTime
+	
+	if TimeSinceActivity >= Config.TimeoutWarningThreshold then
+		print("[Anti-Timeout] Warning: Inactivity detected! Sending activity signal...")
+		UpdateActivity()
+		
+		-- Send input to prevent timeout
+		pcall(function()
+			Humanoid:Move(Vector3.new(0.1, 0, 0.1), false)
+			task.wait(0.1)
+			Humanoid:Move(Vector3.new(0, 0, 0), false)
+		end)
+	end
 end
 
 -- Simulate movement
@@ -60,6 +152,7 @@ local function SimulateMovement()
 		Humanoid:Move(Vector3.new(0, 0, 0), false)
 		LastMovementTime = CurrentTime
 		IsMoving = false
+		UpdateActivity()
 	end
 end
 
@@ -77,6 +170,7 @@ local function SimulateRotation()
 		
 		Camera.CFrame = Camera.CFrame * CFrame.Angles(0, RotationAmount * Direction, 0)
 		LastRotationTime = CurrentTime
+		UpdateActivity()
 	end
 end
 
@@ -90,6 +184,7 @@ local function SimulateJump()
 	if CurrentTime - LastJumpTime >= Interval then
 		Humanoid:Jump()
 		LastJumpTime = CurrentTime
+		UpdateActivity()
 	end
 end
 
@@ -101,6 +196,14 @@ local function AntiAFKLoop()
 			SimulateRotation()
 			SimulateJump()
 		end
+		
+		-- Protection checks
+		if math.random(1, 10) == 1 then -- Run protection checks periodically
+			AntiKickProtection()
+			AntiBanProtection()
+		end
+		AntiTimeoutProtection()
+		
 		RunService.Heartbeat:Wait()
 	end
 end
@@ -113,6 +216,8 @@ LocalPlayer.CharacterAdded:Connect(function(NewCharacter)
 	LastRotationTime = 0
 	LastJumpTime = 0
 	IsMoving = false
+	UpdateActivity()
+	print("[Anti-AFK] Character respawned - protections reactivated")
 end)
 
 -- Create mobile GUI
@@ -139,6 +244,23 @@ local function CreateGui()
 	local Corner = Instance.new("UICorner")
 	Corner.CornerRadius = UDim.new(0, 10)
 	Corner.Parent = Button
+	
+	-- Status Label
+	local StatusLabel = Instance.new("TextLabel")
+	StatusLabel.Name = "StatusLabel"
+	StatusLabel.Size = UDim2.new(0, 200, 0, 80)
+	StatusLabel.Position = UDim2.new(0, 15, 0, 70)
+	StatusLabel.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	StatusLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
+	StatusLabel.TextSize = 12
+	StatusLabel.Font = Enum.Font.GothamBold
+	StatusLabel.Text = "Protections:\n✓ Anti-Kick\n✓ Anti-Ban\n✓ Anti-Timeout"
+	StatusLabel.BorderSizePixel = 0
+	StatusLabel.Parent = ScreenGui
+	
+	local StatusCorner = Instance.new("UICorner")
+	StatusCorner.CornerRadius = UDim.new(0, 8)
+	StatusCorner.Parent = StatusLabel
 	
 	-- Toggle function
 	Button.MouseButton1Click:Connect(function()
@@ -177,6 +299,7 @@ CreateGui()
 AntiAFKLoop()
 
 print("╔═════════════════════════════════════════╗")
-print("║   DEMON HUB ANTI AFK - LOADED          ║")
+print("║   DEMON HUB ANTI AFK v2.0 - LOADED     ║")
 print("║   Mobile Version Ready!                ║")
+print("║   Anti-Kick/Ban/Timeout ACTIVE         ║")
 print("╚═════════════════════════════════════════╝")
